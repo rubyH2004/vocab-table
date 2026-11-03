@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>生詞表排版工具</title>
+<title>生詞與成語表</title>
 <style>
 :root{
   --bg:#EDF1EF; --surface:#FFFFFF; --ink:#1E2B27; --muted:#5E6E68; --line:#D3DCD8;
@@ -131,22 +131,35 @@ canvas.page{display:block;max-width:100%;height:auto;box-shadow:0 1px 4px rgba(0
 .alert button{margin-left:6px}
 .status{min-height:1.6em;font-size:13.5px;color:var(--accent);margin:8px 2px 0}
 .hint{font-size:13.5px;color:var(--muted);margin:4px 2px 0;max-width:72ch}
+
+[hidden]{display:none!important}
+.local-badge{font-size:12px;font-weight:400;color:var(--muted);vertical-align:middle}
+.mode-switch{display:flex;gap:8px;padding:14px 16px 0}
+.mode-switch button{flex:1;border:1px solid var(--line);border-radius:9px;background:var(--field);padding:9px;cursor:pointer}
+.mode-switch button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:700}
+.grid textarea{display:block;width:100%;min-width:64px;min-height:40px;border:0;border-radius:0;resize:vertical;background:transparent;padding:8px 7px;line-height:1.5;overflow:hidden}
+.grid textarea:focus{background:var(--accent-soft);outline:2px solid var(--accent);outline-offset:-2px}
+.msg.error{color:var(--bad)}
 </style>
 </head>
 <body>
 <header class="top">
-  <h1>生詞表排版工具</h1>
-  <p>貼上生詞 → 檢查內容 → 下載 SVG，放進 Canva。</p>
+  <h1>生詞與成語表</h1>
+  <p>選擇表格 → 貼上內容 → 檢查 → 下載 SVG。</p>
 </header>
 <main class="layout">
   <section class="panel">
+    <div class="mode-switch" role="group" aria-label="表格類型">
+      <button type="button" id="mode-vocab" aria-pressed="true">生詞表（5 欄）</button>
+      <button type="button" id="mode-idiom" aria-pressed="false">成語表（4 欄）</button>
+    </div>
     <div class="tabs" role="tablist" aria-label="設定分頁">
       <button role="tab" aria-selected="true" aria-controls="tab-paste" id="t-paste">貼上生詞</button>
       <button role="tab" aria-selected="false" aria-controls="tab-check" id="t-check">檢查內容</button>
       <button role="tab" aria-selected="false" aria-controls="tab-layout" id="t-layout">版面設定</button>
     </div>
     <div class="tabpanel" id="tab-paste" role="tabpanel" aria-labelledby="t-paste">
-      <p class="note">從 Google 文件貼上生詞，一格一行、每組五格。貼上會取代目前內容。</p>
+      <p class="note" id="pasteHelp">貼上 5 欄的生詞表；貼上會取代目前內容。</p>
       <textarea id="pasteBox" spellcheck="false" placeholder="生詞&#10;拼音&#10;詞性&#10;翻譯&#10;解釋&#10;達悟族&#10;Dáwùzú&#10;N.&#10;the Tao (Yami) people&#10;居住於蘭嶼的台灣原住民族&#10;……"></textarea>
       <div class="btn-row">
         <button class="btn primary" id="applyPaste">排版</button>
@@ -155,7 +168,7 @@ canvas.page{display:block;max-width:100%;height:auto;box-shadow:0 1px 4px rgba(0
       <div id="pasteMsg"></div>
     </div>
     <div class="tabpanel" id="tab-check" role="tabpanel" aria-labelledby="t-check" hidden>
-      <p class="note">可直接修改文字；黃色列請確認內容。</p>
+      <p class="note">直接修改；Shift＋Enter 在同一格換行。中文標點會自動修正，黃色列請確認。</p>
       <div class="grid-wrap"><table class="grid" id="grid"></table></div>
       <div class="btn-row"><button class="btn" id="addRow">新增一列</button></div>
     </div>
@@ -209,45 +222,119 @@ function cleanText(t, collapse) {
 const PINYIN_RE = /^[A-Za-zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜüÁÉÍÓÚĀĒĪŌŪǍĚǏǑǓÀÈÌÒÙ'’\-\s]+$/;
 const POS_RE = /^[A-Za-z][A-Za-z.\-\/\s()]*$/;
 
-/* Paste parser: tab-separated rows, or one cell per line in groups of n */
-function parsePaste(text, n, currentHeader) {
-  const raw = String(text || "").replace(/\r/g, "");
-  let rows;
-  if (raw.includes("\t")) {
-    rows = raw.split("\n").filter(l => l.trim()).map(l => {
-      const c = l.split("\t").map(s => s.trim());
-      while (c.length < n) c.push("");
-      return c.slice(0, n);
-    });
-  } else {
-    const lines = raw.split("\n").map(s => s.trim()).filter(Boolean);
-    rows = [];
-    for (let i = 0; i < lines.length; i += n) {
-      const c = lines.slice(i, i + n);
-      while (c.length < n) c.push("");
-      rows.push(c);
+/* Pure formatting/parsing rules; HTML extraction uses an inert DOMParser document. */
+function protectedReplace(text, transform) {
+  const protectedPart = /https?:\/\/[^\s<>「」『』（）。，；！？]+|www\.[^\s<>「」『』（）。，；！？]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|\d+(?:[.,:/-]\d+)+/g;
+  let result = "", end = 0;
+  for (const match of text.matchAll(protectedPart)) {
+    result += transform(text.slice(end, match.index)) + match[0];
+    end = match.index + match[0].length;
+  }
+  return result + transform(text.slice(end));
+}
+function normalizeCell(value, column, count) {
+  const text = String(value ?? "").replace(/\r\n?/g, "\n").normalize("NFC");
+  if (column === count - 2) return protectedReplace(text, part => part.replace(/；/g, ";"));
+  if ((column !== 0 && column !== count - 1) || !RE_CJK_CH.test(text)) return text;
+  const map = {",":"，", ";":"；", ":":"：", "?":"？", "!":"！", "(":"（", ")":"）"};
+  return protectedReplace(text, part => part.replace(/[,;:?!()]/g, ch => map[ch]));
+}
+function normalizedRows(rows, count) {
+  return rows.map(row => row.map((value, column) => normalizeCell(value, column, count)));
+}
+function parseTsv(text) {
+  const rows = []; let row = [], cell = "", quoted = false, closed = false;
+  const raw = String(text).replace(/\r\n?/g, "\n");
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quoted) {
+      if (ch === '"' && raw[i+1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') { quoted = false; closed = true; }
+      else cell += ch;
+    } else if (ch === '"' && !cell && !closed) quoted = true;
+    else if (ch === "\t" || ch === "\n") {
+      row.push(cell.trim()); cell = ""; closed = false;
+      if (ch === "\n") { rows.push(row); row = []; }
+    } else {
+      if (closed && ch.trim()) return {error:"引號格式不完整，請檢查內容。"};
+      cell += ch;
     }
   }
-  let header = null;
-  if (rows.length) {
-    const f = rows[0];
-    const same = currentHeader && f.every((c, i) => c === currentHeader[i]);
-    const looksHeader = !/[A-Za-z]/.test(f.join(""));
-    if (same || looksHeader) header = rows.shift();
+  if (quoted) return {error:"有未結束的引號，請檢查內容。"};
+  if (cell || row.length || !raw.endsWith("\n")) { row.push(cell.trim()); rows.push(row); }
+  return {rows:rows.filter(row => row.some(Boolean))};
+}
+function serializeTsv(rows) {
+  return rows.map(row => row.map(value => /[\t\n"]/.test(value) ? '"'+value.replace(/"/g,'""')+'"' : value).join("\t")).join("\n");
+}
+function tableFromHtml(html) {
+  if (!html) return null;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const table = doc.querySelector("table");
+  if (!table) return null;
+  if (doc.querySelectorAll("table").length !== 1) return {error:"一次請貼上一張表格。"};
+  const rows = [];
+  function cellText(node) {
+    if (node.nodeType === 3) return node.nodeValue;
+    if (node.nodeType !== 1 || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(node.tagName)) return "";
+    if (node.tagName === "BR") return "\n";
+    let value = "";
+    for (const child of node.childNodes) {
+      const block = child.nodeType === 1 && /^(P|DIV|LI)$/.test(child.tagName);
+      if (block && value && !value.endsWith("\n")) value += "\n";
+      value += cellText(child);
+      if (block && !value.endsWith("\n")) value += "\n";
+    }
+    return value;
   }
-  const lineCount = raw.includes("\t") ? null : raw.split("\n").map(s => s.trim()).filter(Boolean).length;
-  return { header, rows, lineCount };
+  for (const tr of table.querySelectorAll("tr")) {
+    const cells = Array.from(tr.children).filter(cell => /^(TD|TH)$/.test(cell.tagName));
+    if (cells.some(cell => cell.colSpan !== 1 || cell.rowSpan !== 1)) return {error:"請先取消合併儲存格，再貼上表格。"};
+    const values = cells.map(cell => cellText(cell).replace(/\u00a0/g," ").trim());
+    if (values.some(Boolean)) rows.push(values);
+  }
+  return {rows, format:"table"};
+}
+function finishImport(rows, count, currentHeader, format) {
+  const invalid = rows.findIndex(row => row.length !== count);
+  if (invalid >= 0) return {error:`第 ${invalid+1} 列有 ${rows[invalid].length} 欄；目前需要 ${count} 欄。請確認表格類型與內容。`};
+  const copy = rows.map(row => row.map(value => String(value).trim()));
+  const first = copy[0];
+  const aliases = count === 5
+    ? [["生詞","詞語","單詞","word"],["拼音","pinyin"],["詞性","pos"],["翻譯（英）","翻譯(英)","翻譯","英文翻譯","english","translation"],["解釋","中文解釋","說明","explanation"]]
+    : [["成語","生詞","詞語","idiom"],["拼音","pinyin"],["翻譯（英）","翻譯(英)","翻譯","英文翻譯","english","translation"],["解釋","中文解釋","說明","explanation"]];
+  const hasHeader = first && (first.every((v,i) => v === currentHeader[i]) || first.every((v,i) => aliases[i].includes(v.toLowerCase())));
+  const header = hasHeader ? copy.shift() : null;
+  if (!copy.length) return {error:"沒有讀到生詞內容，原表格未變更。"};
+  const normalized = normalizedRows(copy, count);
+  const corrections = normalized.reduce((sum,row,ri) => sum + row.filter((v,ci) => v !== copy[ri][ci]).length, 0);
+  return {header, rows:normalized, format, corrections};
+}
+function parsePaste(text, count, currentHeader, html) {
+  const rich = tableFromHtml(html);
+  if (rich) return rich.error ? rich : finishImport(rich.rows, count, currentHeader, "table");
+  const raw = String(text || "").replace(/\r\n?/g,"\n");
+  if (!raw.trim()) return {error:"請先貼上內容。"};
+  if (raw.includes("\t")) {
+    const parsed = parseTsv(raw);
+    return parsed.error ? parsed : finishImport(parsed.rows, count, currentHeader, "tsv");
+  }
+  const lines = raw.split("\n").map(line => line.trim());
+  if (lines.length % count === 1 && lines[lines.length-1] === "") lines.pop();
+  if (lines.length % count !== 0) return {error:`讀到 ${lines.length} 行，無法分成每組 ${count} 格。請檢查空白行與格內換行；原表格未變更。`};
+  const rows = [];
+  for (let i=0;i<lines.length;i+=count) rows.push(lines.slice(i,i+count));
+  return finishImport(rows, count, currentHeader, "lines");
 }
 function rowWarnings(rows) {
-  const bad = [];
-  rows.forEach((r, i) => {
+  return rows.flatMap((row,i) => {
+    if(row.every(cell=>!String(cell).trim())) return [];
     const issues = [];
-    if (r[1] && !PINYIN_RE.test(r[1].trim())) issues.push("拼音");
-    if (r[2] && !POS_RE.test(r[2].trim())) issues.push("詞性");
-    if (r.some(c => !String(c).trim())) issues.push("有空格");
-    if (issues.length) bad.push({ row: i, issues });
+    if (row[1] && !PINYIN_RE.test(row[1].normalize("NFC").trim())) issues.push("拼音");
+    if (row.length === 5 && row[2] && !POS_RE.test(row[2].trim())) issues.push("詞性");
+    if (row.some(cell => !String(cell).trim())) issues.push("有空格");
+    return issues.length ? [{row:i,issues}] : [];
   });
-  return bad;
 }
 
 /* tokenizer + wrap with a measure(text) function in pt */
@@ -325,7 +412,7 @@ function layoutDoc(state, M) {
   const avail = Math.max(36, (+S.tableW || 18) * (UNIT_PT[S.tableUnit] || CM));
   const bleed = S.lines === "none" ? 0 : Math.max(+S.outerW || 0, +S.lineW || 0) / 2;
   const header = state.header.map(t => cleanText(t, S.collapse));
-  const rows = state.rows.map(r => r.map(t => cleanText(t, S.collapse))).filter(r => r.some(Boolean));
+  const rows = state.rows.map(r => r.map((t,i) => cleanText(normalizeCell(t,i,N), S.collapse))).filter(r => r.some(Boolean));
   const warnings = [];
 
   const natural = (t, face, size) => Math.max(0, ...String(t).split("\n").map(l => M.w(l, face, size)));
@@ -470,7 +557,6 @@ function missingGlyphs(fk, text) {
 </script>
 <script>
 (function(){
-const N = 5;
 const DEFAULT = {
   header:["生詞","拼音","詞性","翻譯（英）","解釋"],
   rows:[
@@ -502,24 +588,72 @@ const DEFAULT = {
   }
 };
 const clone = o => JSON.parse(JSON.stringify(o));
-const KEY = "vocab-pdf-v2";
-function merge(o){
-  const d = clone(DEFAULT);
-  if(!o || typeof o !== "object") return d;
-  const fix = r => Array.from({length:N}, (_,i)=>String((r && r[i]) ?? ""));
-  return {
-    title: typeof o.title === "string" ? o.title : "",
-    header: Array.isArray(o.header) ? fix(o.header) : d.header,
-    rows: Array.isArray(o.rows) ? o.rows.map(fix) : d.rows,
-    cols: Array.isArray(o.cols) && o.cols.length === N ? o.cols.map((c,i)=>Object.assign({}, d.cols[i], c)) : d.cols,
-    s: Object.assign({}, d.s, o.s || {})
-  };
+let N = 5, activeMode = "vocab";
+const KEY = "vocab-local-v3";
+const MODE_LABEL = {vocab:"生詞表", idiom:"成語表"};
+const IDIOM_HEADER = ["成語","拼音","翻譯（英）","解釋"];
+let sharedSettings = clone(DEFAULT.s), sharedCols = clone(DEFAULT.cols);
+let documents = {
+  vocab:{title:"",header:clone(DEFAULT.header),rows:normalizedRows(clone(DEFAULT.rows),5),paste:""},
+  idiom:{title:"",header:clone(IDIOM_HEADER),rows:[Array(4).fill("")],paste:""}
+};
+function restoreDocument(raw, count, fallback) {
+  if (!raw || typeof raw !== "object") return clone(fallback);
+  const fix = row => Array.from({length:count},(_,i)=>String(row?.[i] ?? ""));
+  return {title:typeof raw.title === "string" ? raw.title : "", header:Array.isArray(raw.header) ? fix(raw.header) : fallback.header,
+    rows:Array.isArray(raw.rows) && raw.rows.length ? normalizedRows(raw.rows.map(fix),count) : fallback.rows,
+    paste:typeof raw.paste === "string" ? raw.paste : ""};
 }
-let state;
-try{ const raw = localStorage.getItem(KEY); state = raw ? merge(JSON.parse(raw)) : clone(DEFAULT); }catch(e){ state = clone(DEFAULT); }
-let saveT;
-function save(){ clearTimeout(saveT); saveT = setTimeout(()=>{ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }, 300); }
-function changed(){ clearDownloads(); save(); scheduleRender(); }
+try {
+  const saved = JSON.parse(localStorage.getItem(KEY) || "null");
+  if (saved) {
+    for (const [mode,count] of [["vocab",5],["idiom",4]]) documents[mode] = restoreDocument(saved.documents?.[mode],count,documents[mode]);
+    Object.assign(sharedSettings,saved.settings || {});
+    if (Array.isArray(saved.cols) && saved.cols.length===5) sharedCols = sharedCols.map((col,i)=>Object.assign(col,saved.cols[i]));
+    if (saved.activeMode === "idiom") {activeMode="idiom";N=4;}
+  } else {
+    const legacy = JSON.parse(localStorage.getItem("vocab-pdf-v2") || "null");
+    if (legacy) {
+      documents.vocab=restoreDocument(legacy,5,documents.vocab);
+      Object.assign(sharedSettings,legacy.s || {});
+      if(Array.isArray(legacy.cols)&&legacy.cols.length===5) sharedCols=sharedCols.map((col,i)=>Object.assign(col,legacy.cols[i]));
+    }
+  }
+} catch(e) {}
+function currentState() {
+  const doc = documents[activeMode];
+  doc.s = sharedSettings;
+  doc.cols = activeMode === "vocab" ? sharedCols : [sharedCols[0],sharedCols[1],sharedCols[3],sharedCols[4]];
+  return doc;
+}
+let state = currentState(), saveT, revision = 0;
+function save() {
+  clearTimeout(saveT);
+  saveT = setTimeout(persist,250);
+}
+function persist() {
+  const docs = Object.fromEntries(Object.entries(documents).map(([mode,doc])=>[mode,{title:doc.title,header:doc.header,rows:doc.rows,paste:doc.paste}]));
+  try {localStorage.setItem(KEY,JSON.stringify({activeMode,documents:docs,settings:sharedSettings,cols:sharedCols}));}
+  catch(e) {status("瀏覽器無法保存，關閉前請先下載 SVG。");}
+}
+function changed() { revision++; clearDownloads(); save(); scheduleRender(); }
+window.addEventListener("pagehide",persist);
+function switchMode(mode) {
+  if (mode===activeMode || downloading) return;
+  documents[activeMode].paste = $("pasteBox").value;
+  activeMode=mode; N=mode==="vocab" ? 5 : 4; state=currentState();
+  $("pasteBox").value=state.paste;
+  $("pasteMsg").textContent="";
+  $("lessonTitle").value=state.title;
+  updateModeControls(); buildGrid(); buildLayout(); changed();
+}
+function updateModeControls() {
+  for(const mode of ["vocab","idiom"]) $("mode-"+mode).setAttribute("aria-pressed",mode===activeMode);
+  $("t-paste").textContent=activeMode==="vocab" ? "貼上生詞" : "貼上成語";
+  $("pasteHelp").textContent = `貼上 ${N} 欄的${MODE_LABEL[activeMode]}；貼上會取代目前內容。`;
+  $("pasteBox").placeholder = (activeMode==="vocab" ? DEFAULT.header : IDIOM_HEADER).join("\n");
+  $("pasteBox").setAttribute("aria-label",`貼上${MODE_LABEL[activeMode]}`);
+}
 
 const $ = id => document.getElementById(id);
 let statusT;
@@ -617,8 +751,8 @@ function render(){
   const pg0 = L.pages[0];
   const n = L.pages.length, cm = v => (v / CM).toFixed(1);
   $("info").textContent = !pg0 ? "" : n === 1
-    ? `${L.rowCount} 個生詞，表格 ${cm(pg0.w)} × ${cm(pg0.h)} 公分`
-    : `${L.rowCount} 個生詞，分成 ${n} 張表，高度分別是 ${L.pages.map(p=>cm(p.h)).join("、")} 公分`;
+    ? `${L.rowCount} 筆${MODE_LABEL[activeMode]}，表格 ${cm(pg0.w)} × ${cm(pg0.h)} 公分`
+    : `${L.rowCount} 筆${MODE_LABEL[activeMode]}，分成 ${n} 張表，高度分別是 ${L.pages.map(p=>cm(p.h)).join("、")} 公分`;
   renderAlerts(L);
   $("dlBtn").disabled = !fontsReady() || downloading;
   if(!downloading) $("dlBtn").textContent = fontsReady() ? "下載 SVG" : fontLoadState === "error" ? "字型載入失敗" : "字型載入中…";
@@ -645,89 +779,108 @@ function renderAlerts(L){
   }
   L.warnings.forEach(w=>add(w));
   const flags = rowWarnings(state.rows);
-  if(flags.length) add(`有 ${flags.length} 列的內容看起來可能錯位或有空格，請到「檢查內容」確認黃色的列。`, "去檢查", ()=>selectTab("t-check"));
+  if(flags.length) add(`有 ${flags.length} 列需確認，請檢查黃色列。`, "去檢查", ()=>selectTab("t-check"));
 }
 
 /* ---------- tabs ---------- */
 const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
 function selectTab(id){ tabs.forEach(t=>{ const on = t.id === id; t.setAttribute("aria-selected", on); $(t.getAttribute("aria-controls")).hidden = !on; }); }
-tabs.forEach(t=>t.addEventListener("click", ()=>selectTab(t.id)));
+tabs.forEach(t=>t.addEventListener("click", ()=>{selectTab(t.id);requestAnimationFrame(()=>grid.querySelectorAll("textarea").forEach(fitCell));}));
 
-/* ---------- paste ---------- */
-function applyPaste(){
-  const text = $("pasteBox").value;
-  const msg = $("pasteMsg"); msg.innerHTML = "";
-  if(!text.trim()){ msg.className = "msg"; msg.textContent = "框裡還沒有內容。"; return; }
-  const p = parsePaste(text, N, state.header);
-  if(p.header) state.header = p.header;
-  state.rows = p.rows.length ? p.rows : [Array(N).fill("")];
-  buildGrid(); changed();
-  const parts = [`讀到 ${p.rows.length} 個生詞，已經排好了。`];
-  if(p.lineCount !== null){
-    const cells = p.lineCount;
-    if(cells % N !== 0) parts.push(`不過總共有 ${cells} 行，不是 ${N} 的倍數，可能某一格是空的，或某一格裡面有換行，後面的內容會錯位。請到「檢查內容」確認。`);
-  }
-  if(!p.header) parts.push("第一組看起來不是標題列，所以沿用原本的標題。");
-  msg.className = "msg ok"; msg.textContent = parts.join("");
+function importResult(result) {
+  const msg = $("pasteMsg");
+  msg.className = result.error ? "msg error" : "msg ok";
+  if(result.error) {msg.textContent=result.error;return false;}
+  if(result.header) state.header=result.header;
+  state.rows=result.rows;
+  buildGrid(); buildLayout(); changed();
+  const note = result.corrections ? `，已修正 ${result.corrections} 格標點` : "";
+  msg.textContent=`已匯入 ${result.rows.length} 筆${note}。`;
+  if(result.format==="lines") msg.textContent+=" 純文字以一行一格匯入；格內換行請到「檢查內容」調整。";
+  return true;
 }
-$("applyPaste").addEventListener("click", applyPaste);
-$("pasteBox").addEventListener("paste", ()=>setTimeout(applyPaste, 0));
-$("clearPaste").addEventListener("click", ()=>{ $("pasteBox").value = ""; $("pasteMsg").textContent = ""; $("pasteBox").focus(); });
-
-/* ---------- grid ---------- */
+function applyPaste() { importResult(parsePaste($("pasteBox").value,N,state.header)); }
+$("applyPaste").addEventListener("click",applyPaste);
+$("pasteBox").addEventListener("input",()=>{state.paste=$("pasteBox").value;save();});
+$("pasteBox").addEventListener("paste",event=>{
+  const data=event.clipboardData;
+  if(!data) return;
+  event.preventDefault();
+  const result=parsePaste(data.getData("text/plain"),N,state.header,data.getData("text/html"));
+  if(result.error) {importResult(result);return;}
+  const rows=result.header ? [result.header,...result.rows] : result.rows;
+  $("pasteBox").value=serializeTsv(rows); state.paste=$("pasteBox").value;
+  importResult(result);
+});
+$("clearPaste").addEventListener("click",()=>{
+  $("pasteBox").value="";state.paste="";save();$("pasteMsg").textContent="";$("pasteBox").focus();
+});
 const grid = $("grid");
-function buildGrid(focus){
-  grid.innerHTML = "";
-  const tb = grid.createTBody();
-  const mkRow = (cells, ri, isHead)=>{
-    const tr = tb.insertRow(); if(isHead) tr.className = "head";
-    tr.appendChild(Object.assign(document.createElement("td"), {className:"idx", textContent: isHead ? "標題" : ri + 1}));
-    cells.forEach((val, ci)=>{
-      const td = tr.insertCell(); const inp = document.createElement("input");
-      inp.value = val; inp.dataset.r = isHead ? "h" : ri; inp.dataset.c = ci;
-      inp.setAttribute("aria-label", isHead ? `標題第 ${ci+1} 欄` : `第 ${ri+1} 列 ${state.header[ci]}`);
-      if(ci >= 3) inp.style.minWidth = "150px";
-      inp.addEventListener("input", ()=>{ if(isHead){ state.header[ci] = inp.value; buildLayout(); } else state.rows[ri][ci] = inp.value; changed(); });
-      if(!isHead){
-        inp.addEventListener("paste", e=>gridPaste(e, ri, ci));
-        inp.addEventListener("keydown", e=>{
-          if(e.key === "Enter" && !e.isComposing){
-            e.preventDefault();
-            if(ri === state.rows.length - 1){ state.rows.push(Array(N).fill("")); buildGrid({r:ri+1, c:ci}); save(); }
-            else focusCell(ri+1, ci);
-          }
+function fitCell(input) {input.style.height="auto";input.style.height=Math.max(40,input.scrollHeight)+"px";}
+function buildGrid(focus) {
+  grid.replaceChildren(); const body=grid.createTBody();
+  function add(cells,ri,isHeader) {
+    const tr=body.insertRow();if(isHeader)tr.className="head";
+    const indexCell=tr.insertCell();indexCell.className="idx";indexCell.textContent=isHeader ? "標題" : ri+1;
+    cells.forEach((value,ci)=>{
+      const input=document.createElement(isHeader ? "input" : "textarea");
+      if(!isHeader) {input.rows=1;input.spellcheck=false;}
+      input.value=value;input.dataset.r=isHeader ? "h" : ri;input.dataset.c=ci;
+      input.setAttribute("aria-label",isHeader ? `標題第 ${ci+1} 欄` : `第 ${ri+1} 列 ${state.header[ci]}`);
+      if(ci>=N-2)input.style.minWidth="150px";
+      input.addEventListener("input",()=>{
+        if(isHeader)state.header[ci]=input.value;
+        else {state.rows[ri][ci]=input.value;fitCell(input);}
+        changed();
+      });
+      input.addEventListener("blur",()=>{
+        if(isHeader){buildLayout();return;}
+        const value=normalizeCell(input.value,ci,N);
+        if(value!==input.value){input.value=value;state.rows[ri][ci]=value;fitCell(input);changed();}
+      });
+      if(!isHeader) {
+        input.addEventListener("paste",e=>gridPaste(e,ri,ci));
+        input.addEventListener("keydown",e=>{
+          if(e.key!=="Enter" || e.isComposing) return;
+          if(e.shiftKey) return; // Native textarea insertion preserves the caret and undo history.
+          e.preventDefault();
+          if(ri===state.rows.length-1){state.rows.push(Array(N).fill(""));buildGrid({r:ri+1,c:ci});changed();}
+          else focusCell(ri+1,ci);
         });
       }
-      td.appendChild(inp);
+      tr.insertCell().append(input);
     });
-    const dtd = tr.insertCell(); dtd.className = "del";
-    if(!isHead){
-      const b = document.createElement("button"); b.type = "button"; b.textContent = "×"; b.setAttribute("aria-label", `刪除第 ${ri+1} 列`);
-      b.addEventListener("click", ()=>{ state.rows.splice(ri, 1); if(!state.rows.length) state.rows.push(Array(N).fill("")); buildGrid(); changed(); });
-      dtd.appendChild(b);
+    const del=tr.insertCell();del.className="del";
+    if(!isHeader){
+      const button=el("button",{type:"button",textContent:"×"});button.setAttribute("aria-label",`刪除第 ${ri+1} 列`);
+      button.addEventListener("click",()=>{state.rows.splice(ri,1);if(!state.rows.length)state.rows.push(Array(N).fill(""));buildGrid();changed();});del.append(button);
     }
-  };
-  mkRow(state.header, -1, true);
-  state.rows.forEach((r, ri)=>mkRow(r, ri, false));
-  if(focus) focusCell(focus.r, focus.c);
-  markFlags();
+  }
+  add(state.header,-1,true);state.rows.forEach((row,i)=>add(row,i,false));
+  requestAnimationFrame(()=>grid.querySelectorAll("textarea").forEach(fitCell));
+  if(focus)focusCell(focus.r,focus.c);markFlags();
 }
-function markFlags(){
-  const flagged = new Set(rowWarnings(state.rows).map(f=>f.row));
-  grid.querySelectorAll("tbody tr:not(.head)").forEach((tr, i)=>tr.classList.toggle("flag", flagged.has(i)));
+function markFlags() {
+  const flags=new Set(rowWarnings(state.rows).map(item=>item.row));
+  grid.querySelectorAll("tbody tr:not(.head)").forEach((tr,i)=>tr.classList.toggle("flag",flags.has(i)));
 }
-function focusCell(r, c){ const el = grid.querySelector(`input[data-r="${r}"][data-c="${c}"]`); if(el) el.focus(); }
-function gridPaste(e, ri, ci){
-  const t = (e.clipboardData || window.clipboardData).getData("text/plain");
-  if(!t || !t.includes("\t")) return;
-  e.preventDefault();
-  t.replace(/\r/g,"").replace(/\n+$/,"").split("\n").forEach((ln, i)=>{
-    const r = ri + i; while(state.rows.length <= r) state.rows.push(Array(N).fill(""));
-    ln.split("\t").forEach((cell, j)=>{ if(ci + j < N) state.rows[r][ci + j] = cell.trim(); });
+function focusCell(row,col) {grid.querySelector(`[data-r="${row}"][data-c="${col}"]`)?.focus();}
+function gridPaste(event,ri,ci) {
+  const data=event.clipboardData;if(!data)return;
+  const rich=tableFromHtml(data.getData("text/html"));
+  const text=data.getData("text/plain");
+  if(!rich && !text.includes("\t")) return; // Plain multiline text stays inside this cell.
+  event.preventDefault();
+  const parsed=rich || parseTsv(text);
+  if(parsed.error){status(parsed.error);return;}
+  if(parsed.rows.some(row=>row.length>N-ci)){status("貼上的欄數超出剩餘欄位，原內容未變更。");return;}
+  parsed.rows.forEach((row,i)=>{
+    while(state.rows.length<=ri+i)state.rows.push(Array(N).fill(""));
+    row.forEach((value,j)=>state.rows[ri+i][ci+j]=normalizeCell(value,ci+j,N));
   });
-  buildGrid(); changed();
+  buildGrid({r:ri,c:ci});changed();
 }
-$("addRow").addEventListener("click", ()=>{ state.rows.push(Array(N).fill("")); buildGrid({r:state.rows.length-1, c:0}); save(); });
+$("addRow").addEventListener("click",()=>{state.rows.push(Array(N).fill(""));buildGrid({r:state.rows.length-1,c:0});changed();});
 
 /* ---------- layout settings ---------- */
 function el(tag, props, ...kids){ const e = Object.assign(document.createElement(tag), props || {}); kids.forEach(k=>e.append(k)); return e; }
@@ -748,7 +901,7 @@ function group(title, hint, ...kids){
 function field(label, control){ return el("label", {className:"field"}, el("span", {textContent:label}), control); }
 function numCtl(obj, key, min, max, step, unitLabel){
   const n = el("input", {type:"number", className:"num", min, max, step, value:obj[key]});
-  n.addEventListener("input", ()=>{ if(n.value === "" || isNaN(+n.value)) return; obj[key] = +n.value; changed(); });
+  n.addEventListener("input", ()=>{ if(n.value === "" || !n.validity.valid) return; obj[key] = +n.value; changed(); });
   return el("span", {className:"unit"}, n, unitLabel || "");
 }
 function selCtl(obj, key, options, after){
@@ -782,10 +935,10 @@ function buildLayout(){
   state.cols.forEach((c, i)=>{
     const sz = el("input", {type:"number", className:"num", min:6, max:72, step:0.5, value:c.size || S.bodySize || 14});
     sz.setAttribute("aria-label", `${state.header[i]} 字級`);
-    sz.addEventListener("input", ()=>{ if(sz.value === "" || isNaN(+sz.value)) return; c.size = +sz.value; changed(); });
+    sz.addEventListener("input", ()=>{ if(sz.value === "" || !sz.validity.valid) return; c.size = +sz.value; changed(); });
     const w = el("input", {type:"number", className:"num", min:0.2, max:10, step:0.1, value:c.weight, disabled:c.mode === "auto"});
     w.setAttribute("aria-label", `${state.header[i]} 寬度比例`);
-    w.addEventListener("input", ()=>{ if(w.value === "") return; c.weight = +w.value; changed(); });
+    w.addEventListener("input", ()=>{ if(w.value === "" || !w.validity.valid) return; c.weight = +w.value; changed(); });
     const mode = selCtl(c, "mode", [["auto","依文字"],["fill","平分剩下"]], ()=>{ w.disabled = c.mode === "auto"; });
     colBox.append(el("div", {className:"colrow"}, el("span", {textContent: state.header[i] || `第 ${i+1} 欄`}), sz, selCtl(c, "font", [["main","LINE Seed"],["pinyin","拼音字型"]]), selCtl(c, "align", [["left","靠左"],["center","置中"],["right","靠右"]]), mode, w));
   });
@@ -793,12 +946,12 @@ function buildLayout(){
   allSize.setAttribute("aria-label", "全部欄位的字級");
   const applyAll = el("button", {className:"btn", type:"button", textContent:"套用到每一欄"});
   applyAll.addEventListener("click", ()=>{
-    const v = +allSize.value; if(!v) return;
+    const v = +allSize.value; if(!v || !allSize.validity.valid) return;
     S.bodySize = v; state.cols.forEach(c=>{ c.size = v; });
     buildLayout(); changed(); status(`內容的字級全部改成 ${v} 號了。`);
   });
   const reset = el("button", {className:"btn quiet", type:"button", textContent:"恢復預設設定"});
-  reset.addEventListener("click", ()=>{ const d = clone(DEFAULT); state.s = d.s; state.cols = d.cols; buildLayout(); changed(); status("版面設定已恢復預設，生詞內容沒有變。"); });
+  reset.addEventListener("click", ()=>{ sharedSettings=clone(DEFAULT.s); sharedCols=clone(DEFAULT.cols); state=currentState(); buildLayout(); changed(); status("版面設定已恢復預設，生詞內容沒有變。"); });
   const setAll = open => box.querySelectorAll("details.fold").forEach(d=>{ d.open = open; });
   const openAll = el("button", {className:"linkbtn", type:"button", textContent:"全部展開"});
   const closeAll = el("button", {className:"linkbtn", type:"button", textContent:"全部收起"});
@@ -871,30 +1024,38 @@ $("dlBtn").addEventListener("click", async()=>{
   if(!fontsReady() || downloading) return;
   downloading = true; $("dlBtn").disabled = true; $("dlBtn").textContent = "產生中…";
   clearDownloads();
+  for(const mode of ["vocab","idiom"]) $("mode-"+mode).disabled=true;
   try{
     await new Promise(resolve=>requestAnimationFrame(resolve));
-    const L = layoutDoc(state, measurer());
-    const title = (state.title || "").replace(/[\\/:*?"<>|\u0000-\u001f]/g," ").replace(/\s+/g," ").trim() || "生詞表";
+    const exportRevision=revision, exportMode=activeMode;
+    const snapshot=clone(state);
+    if(!snapshot.rows.some(row=>row.some(cell=>String(cell).trim()))){status("請先匯入內容。");return;}
+    const L = layoutDoc(snapshot, measurer());
+    const title = (snapshot.title || "").replace(/[\\/:*?"<>|\u0000-\u001f]/g," ").replace(/\s+/g," ").trim() || "";
     for(let i=0;i<L.pages.length;i++){
+      if(revision!==exportRevision){clearDownloads();status("內容已更新，請重新下載。");return;}
       const svg = buildOutlinedSvg(L.pages[i], fks());
-      const item = {name:title+(L.pages.length>1 ? "-"+(i+1) : "")+".svg", url:URL.createObjectURL(new Blob([svg],{type:"image/svg+xml;charset=utf-8"}))};
+      const item = {name:(title ? title+"-" : "")+MODE_LABEL[exportMode]+(L.pages.length>1 ? "-"+(i+1) : "")+".svg", url:URL.createObjectURL(new Blob([svg],{type:"image/svg+xml;charset=utf-8"}))};
       pendingDownloads.push(item);
       const button = el("button", {type:"button",className:"btn",textContent:L.pages.length>1 ? "下載第 "+(i+1)+" 張" : "再次下載 SVG"});
       button.addEventListener("click",()=>saveSvg(item)); downloadBox.append(button);
       await new Promise(resolve=>requestAnimationFrame(resolve));
     }
+    if(revision!==exportRevision){clearDownloads();status("內容已更新，請重新下載。");return;}
     downloadBox.hidden = false;
     if(pendingDownloads.length===1){saveSvg(pendingDownloads[0]); status("SVG 已產生。若未下載，請按「再次下載 SVG」。");}
     else status("共 "+pendingDownloads.length+" 張表，請分別下載。");
   }catch(e){ clearDownloads(); status("SVG 產生失敗，請重新載入網頁後再試。"); }
-  finally { downloading=false; scheduleRender(); }
+  finally { downloading=false; for(const mode of ["vocab","idiom"]) $("mode-"+mode).disabled=false; scheduleRender(); }
 });
 window.addEventListener("pagehide",clearDownloads);
 
 /* ---------- start ---------- */
 $("lessonTitle").value = state.title || "";
-$("lessonTitle").addEventListener("input", e=>{ state.title = e.target.value; clearDownloads(); save(); });
+$("lessonTitle").addEventListener("input", e=>{ state.title = e.target.value; revision++; clearDownloads(); save(); });
 if(window.ResizeObserver){ let w = 0; new ResizeObserver(es=>{ const nw = Math.round(es[0].contentRect.width); if(nw !== w){ w = nw; scheduleRender(); } }).observe($("pages")); }
+for(const mode of ["vocab","idiom"]) $("mode-"+mode).addEventListener("click",()=>switchMode(mode));
+$("pasteBox").value=state.paste;updateModeControls();
 buildGrid(); buildLayout(); scheduleRender();
 restoreFonts();
 })();
