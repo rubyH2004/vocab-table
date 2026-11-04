@@ -140,6 +140,14 @@ canvas.page{display:block;max-width:100%;height:auto;box-shadow:0 1px 4px rgba(0
 .grid textarea{display:block;width:100%;min-width:64px;min-height:40px;border:0;border-radius:0;resize:vertical;background:transparent;padding:8px 7px;line-height:1.5;overflow:hidden}
 .grid textarea:focus{background:var(--accent-soft);outline:2px solid var(--accent);outline-offset:-2px}
 .msg.error{color:var(--bad)}
+.manual-panel{margin-top:16px;padding:12px;border:1px solid var(--line);border-radius:10px}
+.manual-toggle summary{cursor:pointer;font-weight:700}
+.manual-field{display:block;margin-top:8px}
+.manual-field span{display:block;font-size:14px}
+.manual-field textarea{display:block;min-height:40px;height:auto;padding:7px 9px;resize:vertical}
+.manual-item{display:flex;align-items:start;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere}
+.manual-item-fields{flex:1;min-width:0}
+.manual-item textarea{width:100%;min-height:40px;height:auto;padding:7px 9px;resize:vertical}
 </style>
 </head>
 <body>
@@ -163,7 +171,7 @@ canvas.page{display:block;max-width:100%;height:auto;box-shadow:0 1px 4px rgba(0
       <textarea id="pasteBox" spellcheck="false" placeholder="生詞&#10;拼音&#10;詞性&#10;翻譯&#10;解釋&#10;達悟族&#10;Dáwùzú&#10;N.&#10;the Tao (Yami) people&#10;居住於蘭嶼的台灣原住民族&#10;……"></textarea>
       <div class="btn-row">
         <button class="btn primary" id="applyPaste">排版</button>
-        <button class="btn quiet" id="clearPaste">清空這個框</button>
+        <button class="btn quiet" id="clearPaste">清除目前表格</button>
       </div>
       <div id="pasteMsg"></div>
     </div>
@@ -600,7 +608,7 @@ const MODE_LABEL = {vocab:"生詞表", idiom:"成語表"};
 const IDIOM_HEADER = ["成語","拼音","翻譯（英）","解釋"];
 let sharedSettings = clone(DEFAULT.s), sharedCols = clone(DEFAULT.cols);
 let documents = {
-  vocab:{title:"",header:clone(DEFAULT.header),rows:normalizedRows(clone(DEFAULT.rows),5),paste:""},
+  vocab:{title:"",header:clone(DEFAULT.header),rows:normalizedRows(clone(DEFAULT.rows),5),paste:"",isDemo:true,pendingBatches:[]},
   idiom:{title:"",header:clone(IDIOM_HEADER),rows:[Array(4).fill("")],paste:""}
 };
 function restoreDocument(raw, count, fallback) {
@@ -608,7 +616,8 @@ function restoreDocument(raw, count, fallback) {
   const fix = row => Array.from({length:count},(_,i)=>String(row?.[i] ?? ""));
   return {title:typeof raw.title === "string" ? raw.title : "", header:count === 5 ? clone(DEFAULT.header) : Array.isArray(raw.header) ? fix(raw.header) : fallback.header,
     rows:Array.isArray(raw.rows) && raw.rows.length ? normalizedRows(raw.rows.map(fix),count) : fallback.rows,
-    paste:typeof raw.paste === "string" ? raw.paste : ""};
+    paste:typeof raw.paste === "string" ? raw.paste : "", isDemo:raw.isDemo === true || (raw.isDemo == null && count===5 && !raw.paste && JSON.stringify(raw.rows)===JSON.stringify(DEFAULT.rows)),
+    pendingBatches:Array.isArray(raw.pendingBatches) ? raw.pendingBatches.filter(b=>b && typeof b.text === "string").map(b=>({text:b.text,html:typeof b.html === "string" ? b.html : "",typed:!!b.typed})) : [],pendingPrefix:typeof raw.pendingPrefix === "string" ? raw.pendingPrefix : "",pendingConflict:!!raw.pendingConflict};
 }
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || "null");
@@ -638,7 +647,7 @@ function save() {
   saveT = setTimeout(persist,250);
 }
 function persist() {
-  const docs = Object.fromEntries(Object.entries(documents).map(([mode,doc])=>[mode,{title:doc.title,header:doc.header,rows:doc.rows,paste:doc.paste}]));
+  const docs = Object.fromEntries(Object.entries(documents).map(([mode,doc])=>[mode,{title:doc.title,header:doc.header,rows:doc.rows,paste:doc.paste,isDemo:!!doc.isDemo,pendingBatches:doc.pendingBatches || [],pendingPrefix:doc.pendingPrefix || "",pendingConflict:!!doc.pendingConflict}]));
   try {localStorage.setItem(KEY,JSON.stringify({activeMode,documents:docs,settings:sharedSettings,cols:sharedCols}));}
   catch(e) {status("瀏覽器無法保存，關閉前請先下載 SVG。");}
 }
@@ -656,9 +665,10 @@ function switchMode(mode) {
 function updateModeControls() {
   for(const mode of ["vocab","idiom"]) $("mode-"+mode).setAttribute("aria-pressed",mode===activeMode);
   $("t-paste").textContent=activeMode==="vocab" ? "貼上生詞" : "貼上成語";
-  $("pasteHelp").textContent = `貼上 ${N} 欄的${MODE_LABEL[activeMode]}；貼上會取代目前內容。`;
+  $("pasteHelp").textContent = activeMode==="idiom" ? "可分次貼上；確認後按「排版」加入，或自行整理四欄。" : "可分次貼上 5 欄生詞表，成功匯入的內容會接在後面。";
   $("pasteBox").placeholder = (activeMode==="vocab" ? DEFAULT.header : IDIOM_HEADER).join("\n");
   $("pasteBox").setAttribute("aria-label",`貼上${MODE_LABEL[activeMode]}`);
+  updateManualVisibility();
 }
 
 const $ = id => document.getElementById(id);
@@ -798,29 +808,124 @@ function importResult(result) {
   msg.className = result.error ? "msg error" : "msg ok";
   if(result.error) {msg.textContent=result.error;return false;}
   if(result.header && N === 4) state.header=result.header;
-  state.rows=result.rows;
+  if(state.isDemo){state.rows=[];state.isDemo=false;}
+  state.rows=state.rows.filter(row=>row.some(cell=>String(cell).trim())).concat(result.rows);
   buildGrid(); buildLayout(); changed();
   const note = result.corrections ? `，已修正 ${result.corrections} 格標點` : "";
-  msg.textContent=`已匯入 ${result.rows.length} 筆${note}。`;
+  msg.textContent=`已新增 ${result.rows.length} 筆${note}，目前共 ${state.rows.length} 筆。`;
   if(result.format==="lines") msg.textContent+=" 純文字以一行一格匯入；格內換行請到「檢查內容」調整。";
   return true;
 }
-function applyPaste() { importResult(parsePaste($("pasteBox").value,N,state.header)); }
+let clipboardTable = null;
+function applyPaste() {
+  if(state.pendingConflict){$("pasteMsg").className="msg error";$("pasteMsg").textContent="前面已排版的原文被修改了，請先還原原文，或在「檢查內容」修改表格。";return;}
+  const batches=state.pendingBatches || [];
+  if(!batches.length){$("pasteMsg").textContent="目前沒有尚未排版的新內容。";return;}
+  let results=batches.map(b=>parsePaste(b.text,N,state.header,b.html));
+  if(results.some(r=>r.error)) {
+    const richFailure=results.findIndex((r,i)=>r.error && batches[i].html && tableFromHtml(batches[i].html));
+    if(richFailure>=0){importResult(results[richFailure]);return;}
+    if(batches.some(b=>b.html && tableFromHtml(b.html))){importResult(results.find(r=>r.error));return;}
+    const combined=parsePaste(batches.map(b=>b.text.replace(/\n+$/,"" )).join("\n"),N,state.header);
+    if(combined.error){importResult(combined);return;}
+    results=[combined];
+  }
+  const rows=results.flatMap(r=>r.rows);
+  const result={rows,header:results.find(r=>r.header)?.header,corrections:results.reduce((n,r)=>n+r.corrections,0),format:results.length===1 ? results[0].format : "batches"};
+  if(importResult(result)){state.pendingBatches=[];state.pendingPrefix=$("pasteBox").value;save();}
+}
 $("applyPaste").addEventListener("click",applyPaste);
-$("pasteBox").addEventListener("input",()=>{state.paste=$("pasteBox").value;save();});
+$("pasteBox").addEventListener("input",()=>{
+  clipboardTable=null;
+  const current=$("pasteBox").value, old=state.paste || "";
+  const pending=(state.pendingBatches ||= []);
+  if(!pending.length && current.startsWith(old))state.pendingPrefix=old;
+  const prefix=state.pendingPrefix || "";
+  if((pending.length || current.startsWith(old)) && current.startsWith(prefix)){
+    state.pendingConflict=false;
+    const unprocessed=current.slice(prefix.length).replace(/^\n/,"");
+    state.pendingBatches=unprocessed ? [{text:unprocessed,html:"",typed:true}] : [];
+  } else {
+    state.pendingConflict=pending.length>0;
+    if(!pending.length)state.pendingPrefix=current;
+    $("pasteMsg").className="msg error";
+    $("pasteMsg").textContent="已排版的內容請到「檢查內容」修改；貼上框中的修改不會自動改動表格。";
+  }
+  state.paste=current;save();
+});
 $("pasteBox").addEventListener("paste",event=>{
   const data=event.clipboardData;
   if(!data) return;
   event.preventDefault();
-  const result=parsePaste(data.getData("text/plain"),N,state.header,data.getData("text/html"));
-  if(result.error) {importResult(result);return;}
-  const rows=result.header ? [result.header,...result.rows] : result.rows;
-  $("pasteBox").value=serializeTsv(rows); state.paste=$("pasteBox").value;
-  importResult(result);
+  const box=$("pasteBox"), text=data.getData("text/plain"), html=data.getData("text/html");
+  if(!text){$("pasteMsg").className="msg error";$("pasteMsg").textContent="沒有讀到文字，請重新複製後貼上。";return;}
+  const separator=box.value && !box.value.endsWith("\n") && !text.startsWith("\n") ? "\n" : "";
+  if(!(state.pendingBatches || []).length)state.pendingPrefix=box.value;
+  box.value += separator+text;
+  clipboardTable=null;
+  (state.pendingBatches ||= []).push({text,html});
+  state.paste=box.value;save();
+  if(activeMode==="vocab"){
+    applyPaste();return;
+  }
+  $("pasteMsg").className="msg";
+  $("pasteMsg").textContent="已加入原文。可繼續貼上，完成後按「排版」，或用下方四個欄位自行整理。";
 });
 $("clearPaste").addEventListener("click",()=>{
-  $("pasteBox").value="";state.paste="";save();$("pasteMsg").textContent="";$("pasteBox").focus();
+  clipboardTable=null;$("pasteBox").value="";state.paste="";state.pendingBatches=[];state.pendingPrefix="";state.pendingConflict=false;state.rows=[Array(N).fill("")];state.isDemo=false;
+  if(activeMode==="idiom"){manualRows=[];manualFields.forEach(input=>input.value="");showManualRows();}
+  buildGrid();changed();$("pasteMsg").textContent="已清除目前表格和貼上的內容。";$("pasteBox").focus();
 });
+/* A separate staging area keeps the source and existing table intact until applied. */
+const manualPanel=el("section",{className:"manual-panel",hidden:activeMode!=="idiom"});
+const manualFields=["成語","拼音","翻譯（英）","解釋"].map(label=>{
+  const input=el("textarea",{rows:label==="解釋" ? 2 : 1,placeholder:label});
+  input.setAttribute("aria-label",`手動整理 ${label}`); return input;
+});
+let manualRows=[];
+const manualList=el("div",{className:"manual-list"});
+const manualStatus=el("p",{className:"note"});
+const manualAdd=el("button",{type:"button",className:"btn",textContent:"加入這一筆"});
+const manualApply=el("button",{type:"button",className:"btn primary",textContent:"用整理好的內容排版",disabled:true});
+function showManualRows(){
+  manualList.replaceChildren();
+  manualRows.forEach((row,i)=>{
+    const item=el("div",{className:"manual-item"});
+    const description=el("div",{className:"manual-item-fields"});
+    description.append(el("b",{textContent:`第 ${i+1} 筆`}));
+    row.forEach((value,j)=>{
+      const input=el("textarea",{rows:1,value});
+      input.setAttribute("aria-label",`待整理第 ${i+1} 筆 ${["成語","拼音","翻譯（英）","解釋"][j]}`);
+      input.addEventListener("input",()=>{manualRows[i][j]=input.value;});
+      description.append(el("label",{className:"manual-field"},el("span",{textContent:["成語","拼音","翻譯（英）","解釋"][j]}),input));
+    });
+    const remove=el("button",{type:"button",className:"btn quiet",textContent:"移除"});
+    remove.setAttribute("aria-label",`移除待整理第 ${i+1} 筆`);
+    remove.addEventListener("click",()=>{manualRows.splice(i,1);showManualRows();});
+    item.append(description,remove);manualList.append(item);
+  });
+  manualApply.disabled=!manualRows.length;
+  manualStatus.textContent=manualRows.length ? `已整理 ${manualRows.length} 筆；按下排版會加入目前成語表。` : "";
+}
+manualAdd.addEventListener("click",()=>{
+  const row=manualFields.map(input=>input.value.trim());
+  if(row.every(value=>!value)){manualStatus.textContent="請先填入這一筆的內容，再加入。";return;}
+  manualRows.push(row);manualFields.forEach(input=>input.value="");showManualRows();manualFields[0].focus();
+});
+manualApply.addEventListener("click",()=>{
+  if(activeMode!=="idiom" || !manualRows.length)return;
+  if(manualFields.some(input=>input.value.trim())){manualStatus.textContent="上方還有未加入的內容，請先加入這一筆。";return;}
+  if(manualRows.some(row=>row.every(value=>!value.trim()))){manualStatus.textContent="有整筆空白，請填入內容或移除。";return;}
+  state.rows=state.rows.filter(row=>row.some(cell=>String(cell).trim())).concat(normalizedRows(manualRows,4));state.pendingBatches=[];state.pendingPrefix=$("pasteBox").value;state.pendingConflict=false;
+  manualRows=[];showManualRows();buildGrid();buildLayout();changed();selectTab("t-check");
+  status("已套用整理好的成語表。");
+});
+const manualToggle=el("details",{className:"manual-toggle"});
+manualToggle.append(el("summary",{textContent:"自己整理成四欄"}),el("p",{className:"note",textContent:"從上面的原文複製到四個欄位。每填完一筆按「加入這一筆」；全部整理好再排版。重新整理或關閉前，請先排版以保存整理結果。"}));
+manualFields.forEach((input,i)=>manualToggle.append(el("label",{className:"manual-field"},el("span",{textContent:["成語","拼音","翻譯（英）","解釋"][i]}),input)));
+manualToggle.append(el("div",{className:"btn-row"},manualAdd),manualList,manualStatus,manualApply);
+manualPanel.append(manualToggle);$("pasteMsg").after(manualPanel);
+function updateManualVisibility(){manualPanel.hidden=activeMode!=="idiom";}
 const grid = $("grid");
 function fitCell(input) {input.style.height="auto";input.style.height=Math.max(40,input.scrollHeight)+"px";}
 function buildGrid(focus) {
@@ -838,7 +943,7 @@ function buildGrid(focus) {
       if(ci>=N-2)input.style.minWidth="150px";
       input.addEventListener("input",()=>{
         if(isHeader)state.header[ci]=input.value;
-        else {state.rows[ri][ci]=input.value;fitCell(input);}
+        else {state.rows[ri][ci]=input.value;state.isDemo=false;fitCell(input);}
         changed();
       });
       input.addEventListener("blur",()=>{
