@@ -420,7 +420,7 @@ function layoutDoc(state, M) {
   // output = the table itself; bleed keeps the outer line (and its square caps) inside the file
   const avail = Math.max(36, (+S.tableW || 18) * (UNIT_PT[S.tableUnit] || CM));
   const bleed = S.lines === "none" ? 0 : Math.max(+S.outerW || 0, +S.lineW || 0) / 2;
-  const header = (N === 5 ? ["生詞","拼音","詞性","翻譯","解釋"] : state.header).map(t => cleanText(t, S.collapse));
+  const header = (N === 5 ? ["生詞","拼音","詞性","翻譯","解釋"] : ["成語","拼音","翻譯","解釋"]).map(t => cleanText(t, S.collapse));
   const rows = state.rows.map(r => r.map((t,i) => cleanText(normalizeCell(t,i,N), S.collapse))).filter(r => r.some(Boolean));
   const warnings = [];
 
@@ -605,7 +605,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 let N = 5, activeMode = "vocab";
 const KEY = "vocab-local-v3";
 const MODE_LABEL = {vocab:"生詞表", idiom:"成語表"};
-const IDIOM_HEADER = ["成語","拼音","翻譯（英）","解釋"];
+const IDIOM_HEADER = ["成語","拼音","翻譯","解釋"];
 let sharedSettings = clone(DEFAULT.s), sharedCols = clone(DEFAULT.cols);
 let documents = {
   vocab:{title:"",header:clone(DEFAULT.header),rows:normalizedRows(clone(DEFAULT.rows),5),paste:"",isDemo:true,pendingBatches:[]},
@@ -614,7 +614,7 @@ let documents = {
 function restoreDocument(raw, count, fallback) {
   if (!raw || typeof raw !== "object") return clone(fallback);
   const fix = row => Array.from({length:count},(_,i)=>String(row?.[i] ?? ""));
-  return {title:typeof raw.title === "string" ? raw.title : "", header:count === 5 ? clone(DEFAULT.header) : Array.isArray(raw.header) ? fix(raw.header) : fallback.header,
+  return {title:typeof raw.title === "string" ? raw.title : "", header:count === 5 ? clone(DEFAULT.header) : clone(IDIOM_HEADER),
     rows:Array.isArray(raw.rows) && raw.rows.length ? normalizedRows(raw.rows.map(fix),count) : fallback.rows,
     paste:typeof raw.paste === "string" ? raw.paste : "", isDemo:raw.isDemo === true || (raw.isDemo == null && count===5 && !raw.paste && JSON.stringify(raw.rows)===JSON.stringify(DEFAULT.rows)),
     pendingBatches:Array.isArray(raw.pendingBatches) ? raw.pendingBatches.filter(b=>b && typeof b.text === "string").map(b=>({text:b.text,html:typeof b.html === "string" ? b.html : "",typed:!!b.typed})) : [],pendingPrefix:typeof raw.pendingPrefix === "string" ? raw.pendingPrefix : "",pendingConflict:!!raw.pendingConflict};
@@ -807,7 +807,6 @@ function importResult(result) {
   const msg = $("pasteMsg");
   msg.className = result.error ? "msg error" : "msg ok";
   if(result.error) {msg.textContent=result.error;return false;}
-  if(result.header && N === 4) state.header=result.header;
   if(state.isDemo){state.rows=[];state.isDemo=false;}
   state.rows=state.rows.filter(row=>row.some(cell=>String(cell).trim())).concat(result.rows);
   buildGrid(); buildLayout(); changed();
@@ -938,7 +937,7 @@ function buildGrid(focus) {
       if(!isHeader) {input.rows=1;input.spellcheck=false;}
       input.value=value;input.dataset.r=isHeader ? "h" : ri;input.dataset.c=ci;
       input.setAttribute("aria-label",isHeader ? `標題第 ${ci+1} 欄` : `第 ${ri+1} 列 ${state.header[ci]}`);
-      if(isHeader && N === 5) input.readOnly=true;
+      if(isHeader) input.readOnly=true;
       if(!isHeader && N === 4 && ci === 1) input.wrap="off";
       if(ci>=N-2)input.style.minWidth="150px";
       input.addEventListener("input",()=>{
