@@ -234,6 +234,7 @@ function protectedReplace(text, transform) {
 }
 function normalizeCell(value, column, count) {
   const text = String(value ?? "").replace(/\r\n?/g, "\n").normalize("NFC");
+  if (count === 4 && column === 1) return text.replace(/\s+/g, " ").trim();
   if (column === count - 2) return protectedReplace(text, part => part.replace(/；/g, ";"));
   if ((column !== 0 && column !== count - 1) || !RE_CJK_CH.test(text)) return text;
   const map = {",":"，", ";":"；", ":":"：", "?":"？", "!":"！", "(":"（", ")":"）"};
@@ -411,7 +412,7 @@ function layoutDoc(state, M) {
   // output = the table itself; bleed keeps the outer line (and its square caps) inside the file
   const avail = Math.max(36, (+S.tableW || 18) * (UNIT_PT[S.tableUnit] || CM));
   const bleed = S.lines === "none" ? 0 : Math.max(+S.outerW || 0, +S.lineW || 0) / 2;
-  const header = state.header.map(t => cleanText(t, S.collapse));
+  const header = (N === 5 ? ["生詞","拼音","詞性","翻譯","解釋"] : state.header).map(t => cleanText(t, S.collapse));
   const rows = state.rows.map(r => r.map((t,i) => cleanText(normalizeCell(t,i,N), S.collapse))).filter(r => r.some(Boolean));
   const warnings = [];
 
@@ -440,10 +441,15 @@ function layoutDoc(state, M) {
 
   const mkRow = (cells, isHead) => {
     const out = cells.map((t, i) => {
-      const size = isHead ? hs : colSize(i);
+      let size = isHead ? hs : colSize(i);
       const face = isHead ? "bold" : bodyFace(i);
       const inner = Math.max(1, widths[i] - 2 * ph);
-      const lines = wrap(t, inner, s => M.w(s, face, size));
+      const oneLine = !isHead && N === 4 && i === 1;
+      if (oneLine) {
+        const width = M.w(t, face, size);
+        if (width > inner) size *= inner / width;
+      }
+      const lines = oneLine ? [t] : wrap(t, inner, s => M.w(s, face, size));
       return { lines, size, face, align: isHead ? "center" : cols[i].align };
     });
     const contentH = Math.max(...out.map(c => c.size + (c.lines.length - 1) * c.size * lh));
@@ -558,7 +564,7 @@ function missingGlyphs(fk, text) {
 <script>
 (function(){
 const DEFAULT = {
-  header:["生詞","拼音","詞性","翻譯（英）","解釋"],
+  header:["生詞","拼音","詞性","翻譯","解釋"],
   rows:[
     ["達悟族","Dáwùzú","N.","the Tao (Yami) people","居住於蘭嶼的台灣原住民族"],
     ["獨特","dútè","Vs.","unique","特別、跟別人 不同"],
@@ -600,7 +606,7 @@ let documents = {
 function restoreDocument(raw, count, fallback) {
   if (!raw || typeof raw !== "object") return clone(fallback);
   const fix = row => Array.from({length:count},(_,i)=>String(row?.[i] ?? ""));
-  return {title:typeof raw.title === "string" ? raw.title : "", header:Array.isArray(raw.header) ? fix(raw.header) : fallback.header,
+  return {title:typeof raw.title === "string" ? raw.title : "", header:count === 5 ? clone(DEFAULT.header) : Array.isArray(raw.header) ? fix(raw.header) : fallback.header,
     rows:Array.isArray(raw.rows) && raw.rows.length ? normalizedRows(raw.rows.map(fix),count) : fallback.rows,
     paste:typeof raw.paste === "string" ? raw.paste : ""};
 }
@@ -791,7 +797,7 @@ function importResult(result) {
   const msg = $("pasteMsg");
   msg.className = result.error ? "msg error" : "msg ok";
   if(result.error) {msg.textContent=result.error;return false;}
-  if(result.header) state.header=result.header;
+  if(result.header && N === 4) state.header=result.header;
   state.rows=result.rows;
   buildGrid(); buildLayout(); changed();
   const note = result.corrections ? `，已修正 ${result.corrections} 格標點` : "";
@@ -827,6 +833,8 @@ function buildGrid(focus) {
       if(!isHeader) {input.rows=1;input.spellcheck=false;}
       input.value=value;input.dataset.r=isHeader ? "h" : ri;input.dataset.c=ci;
       input.setAttribute("aria-label",isHeader ? `標題第 ${ci+1} 欄` : `第 ${ri+1} 列 ${state.header[ci]}`);
+      if(isHeader && N === 5) input.readOnly=true;
+      if(!isHeader && N === 4 && ci === 1) input.wrap="off";
       if(ci>=N-2)input.style.minWidth="150px";
       input.addEventListener("input",()=>{
         if(isHeader)state.header[ci]=input.value;
